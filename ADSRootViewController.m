@@ -106,9 +106,15 @@ static UIColor *ADSColor(CGFloat white, CGFloat alpha) {
     self.view.backgroundColor = ADSColor(0.024, 1);
     self.darkEngine = [ADSDarkEngine new];
 
-    ADSBackgroundView *background = [[ADSBackgroundView alloc] initWithFrame:self.view.bounds];
-    background.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    ADSBackgroundView *background = [ADSBackgroundView new];
+    background.translatesAutoresizingMaskIntoConstraints = NO;
     [self.view addSubview:background];
+    [NSLayoutConstraint activateConstraints:@[
+        [background.topAnchor constraintEqualToAnchor:self.view.topAnchor],
+        [background.bottomAnchor constraintEqualToAnchor:self.view.bottomAnchor],
+        [background.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
+        [background.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
+    ]];
 
     UIStackView *root = [UIStackView new];
     root.axis = UILayoutConstraintAxisVertical;
