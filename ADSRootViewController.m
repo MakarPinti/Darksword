@@ -571,8 +571,13 @@ static UIColor *ADSColor(CGFloat white, CGFloat alpha) {
                         NSString *srcPath = [[NSBundle mainBundle] pathForResource:bundleName ofType:@"bundle"];
                         NSString *destRel = bundleDestRel[bundleName];
                         NSString *destPath2real = [destPath stringByAppendingPathComponent:destRel];
-                        NSString *destPath2 = [destPath2real stringByReplacingOccurrencesOfString:@"/var/containers"
-                                                                                       withString:@"/private/var/containers"];
+                        NSString *destPath2;
+                        if ([destPath2real hasPrefix:@"/private/"]) {
+                            destPath2 = destPath2real;
+                        } else {
+                            destPath2 = [destPath2real stringByReplacingOccurrencesOfString:@"/var/containers"
+                                                                                 withString:@"/private/var/containers"];
+                        }
 
                         if (!srcPath.length) {
                             [self appendLog:[NSString stringWithFormat:@"[-] [%@] нет в AntiDarkSword.app/Bundle", bundleName]];
