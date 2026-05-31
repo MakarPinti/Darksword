@@ -27,5 +27,6 @@ AntiDarkSword_CFLAGS = -fobjc-arc -I. -Idark \
 	-DADS_HAS_DARK_SANDBOX_M=1
 
 AntiDarkSword_CODESIGN_FLAGS = -Sentitlements.plist
+AntiDarkSword_PLIST_FILE = Info.plist
 
 include $(THEOS_MAKE_PATH)/application.mk
