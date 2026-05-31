@@ -25,7 +25,7 @@ jobs:
         env:
           THEOS: ${{ github.workspace }}/theos
 
-      - name: Convert .deb to .ipa
+      - name: Inject Info.plist and build IPA
         run: |
           DEB=$(find packages -name "*.deb" | sort | tail -1)
           echo "Found deb: $DEB"
@@ -35,8 +35,6 @@ jobs:
           ar x "$OLDPWD/$DEB"
 
           DATA=$(ls data.tar.* 2>/dev/null | head -1)
-          echo "Data archive: $DATA"
-
           case "$DATA" in
             *.gz)  tar xzf "$DATA" ;;
             *.xz)  tar xJf "$DATA" ;;
@@ -46,6 +44,17 @@ jobs:
 
           APP=$(find . -name "*.app" -maxdepth 8 | head -1)
           echo "App bundle: $APP"
+
+          # Inject Info.plist
+          cp "$OLDPWD/Info.plist" "$APP/Info.plist"
+          echo "Info.plist injected"
+
+          # Remove any Zone.Identifier junk
+          find "$APP" -name "*Zone.Identifier" -delete
+          find "$APP" -name "*.md" -delete
+
+          echo "Contents of .app:"
+          ls -la "$APP"
 
           mkdir -p Payload
           cp -r "$APP" Payload/
