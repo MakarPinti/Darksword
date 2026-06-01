@@ -258,7 +258,10 @@ static UIColor *ADSText(CGFloat alpha) {
     subtitle.textColor = ADSText(0.36);
     subtitle.font = [UIFont systemFontOfSize:13 weight:UIFontWeightMedium];
     subtitle.textAlignment = NSTextAlignmentCenter;
-    subtitle.letterSpacing = 2.5;
+    NSMutableAttributedString *subtitleAttr = [[NSMutableAttributedString alloc] initWithString:subtitle.text ?: @""];
+[subtitleAttr addAttribute:NSKernAttributeName value:@(2.5) range:NSMakeRange(0, subtitleAttr.length)];
+subtitle.attributedText = subtitleAttr;
+
     subtitle.translatesAutoresizingMaskIntoConstraints = NO;
     [view addSubview:subtitle];
 
