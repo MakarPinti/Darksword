@@ -126,14 +126,31 @@ bool vnode_redirect_file(const char *to, const char *from, uint64_t* orig_to_vno
     *orig_to_vnode = to_vnode;
     *orig_to_v_data = kread64(to_vnode + off_vnode_v_data);
     uint64_t from_v_data = kread64(from_vnode + off_vnode_v_data);
+
+    // Hold the vnode alive so the kernel can't reclaim it before we unredirect.
+    // Without this bump the vnode may be freed while the redirect is active,
+    // and the later kwrite64 in vnode_unredirect_file hits freed memory → panic.
+    uint32_t usecount = (uint32_t)kread64(to_vnode + off_vnode_v_usecount);
+    kwrite64(to_vnode + off_vnode_v_usecount, (uint64_t)(usecount + 1));
+
     kwrite64(to_vnode + off_vnode_v_data, from_v_data);
     
     return true;
 }
 
 bool vnode_unredirect_file(uint64_t orig_to_vnode, uint64_t orig_to_v_data) {
+    if (orig_to_vnode == 0 || orig_to_vnode == (uint64_t)-1) return false;
+
+    // Check v_usecount > 0 — if zero the vnode was already reclaimed by the
+    // kernel; writing into it would corrupt kernel memory and cause a panic.
+    uint32_t usecount = (uint32_t)kread64(orig_to_vnode + off_vnode_v_usecount);
+    if (usecount == 0) return false;
+
     kwrite64(orig_to_vnode + off_vnode_v_data, orig_to_v_data);
-    
+
+    // Release the extra ref we took in vnode_redirect_file
+    kwrite64(orig_to_vnode + off_vnode_v_usecount, (uint64_t)(usecount - 1));
+
     return true;
 }
     
