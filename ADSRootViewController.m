@@ -844,8 +844,11 @@ subtitle.attributedText = subtitleAttr;
                     [tasks addObject:@{ @"name": bundleName, @"src": srcPath, @"dst": destPath2 }];
                 }
 
-                // vnode_redirect_file — на фоновом потоке, вне main thread
-                dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+                // vnode_redirect_file — на vnodeQueue, а не на global queue.
+                // Это устраняет гонку с ads_restoreVnodes: обе стороны
+                // теперь сериализованы на одной очереди, поэтому ядерные
+                // kwrite64 из redirect и unredirect никогда не пересекаются.
+                dispatch_async(self.vnodeQueue, ^{
                     for (NSDictionary *task in tasks) {
                         NSString *bundleName = task[@"name"];
                         NSString *srcPath    = task[@"src"];
@@ -876,10 +879,9 @@ subtitle.attributedText = subtitleAttr;
                             &orig_v_data,
                             &orig_from_vnode);
 
+                        // Уже на vnodeQueue — addObject без вложенного dispatch_sync
                         if (ok && orig_vnode != 0) {
-                            dispatch_sync(self.vnodeQueue, ^{
-                                [self.redirectedVnodes addObject:@[@(orig_vnode), @(orig_v_data), @(orig_from_vnode)]];
-                            });
+                            [self.redirectedVnodes addObject:@[@(orig_vnode), @(orig_v_data), @(orig_from_vnode)]];
                         }
 
                         dispatch_async(dispatch_get_main_queue(), ^{
@@ -925,8 +927,11 @@ subtitle.attributedText = subtitleAttr;
 }
 
 - (void)dealloc {
-    [self ads_restoreVnodes];
+    // Снять observer до restore: иначе нотификация может прилететь
+    // в окно между концом restore и removeObserver, вызвав повторный
+    // restore на частично разрушенном объекте.
     [[NSNotificationCenter defaultCenter] removeObserver:self];
+    [self ads_restoreVnodes];
 }
 
 - (void)openTelegram {

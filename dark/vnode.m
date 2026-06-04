@@ -129,15 +129,18 @@ bool vnode_redirect_file(const char *to, const char *from, uint64_t* orig_to_vno
     uint64_t from_v_data = kread64(from_vnode + off_vnode_v_data);
 
     // Hold to_vnode alive so it can't be reclaimed while redirect is active.
-    uint32_t to_usecount = (uint32_t)kread64(to_vnode + off_vnode_v_usecount);
-    kwrite64(to_vnode + off_vnode_v_usecount, (uint64_t)(to_usecount + 1));
+    // Use kread32/kwrite32: v_usecount is int32_t; kwrite64 would overwrite the
+    // adjacent v_iocount field with 0, causing the kernel to treat the vnode as
+    // free → use-after-free → kernel panic.
+    uint32_t to_usecount = kread32(to_vnode + off_vnode_v_usecount);
+    kwrite32(to_vnode + off_vnode_v_usecount, to_usecount + 1);
 
     // Hold from_vnode alive: its v_data is now referenced by to_vnode.
     // Without this bump the kernel may reclaim from_vnode after the app
     // goes to background, leaving to_vnode->v_data pointing at freed
     // memory → game accesses file → kernel panic.
-    uint32_t from_usecount = (uint32_t)kread64(from_vnode + off_vnode_v_usecount);
-    kwrite64(from_vnode + off_vnode_v_usecount, (uint64_t)(from_usecount + 1));
+    uint32_t from_usecount = kread32(from_vnode + off_vnode_v_usecount);
+    kwrite32(from_vnode + off_vnode_v_usecount, from_usecount + 1);
 
     kwrite64(to_vnode + off_vnode_v_data, from_v_data);
     
@@ -147,19 +150,21 @@ bool vnode_redirect_file(const char *to, const char *from, uint64_t* orig_to_vno
 bool vnode_unredirect_file(uint64_t orig_to_vnode, uint64_t orig_to_v_data, uint64_t from_vnode) {
     if (orig_to_vnode == 0 || orig_to_vnode == (uint64_t)-1) return false;
 
-    uint32_t to_usecount = (uint32_t)kread64(orig_to_vnode + off_vnode_v_usecount);
+    // Use kread32/kwrite32 — same reason as vnode_redirect_file:
+    // v_usecount is int32_t and kwrite64 would corrupt the adjacent v_iocount.
+    uint32_t to_usecount = kread32(orig_to_vnode + off_vnode_v_usecount);
     if (to_usecount == 0) return false;
 
     kwrite64(orig_to_vnode + off_vnode_v_data, orig_to_v_data);
 
     // Release the extra ref we took on to_vnode
-    kwrite64(orig_to_vnode + off_vnode_v_usecount, (uint64_t)(to_usecount - 1));
+    kwrite32(orig_to_vnode + off_vnode_v_usecount, to_usecount - 1);
 
     // Release the extra ref we took on from_vnode
     if (from_vnode != 0 && from_vnode != (uint64_t)-1) {
-        uint32_t from_usecount = (uint32_t)kread64(from_vnode + off_vnode_v_usecount);
+        uint32_t from_usecount = kread32(from_vnode + off_vnode_v_usecount);
         if (from_usecount > 0) {
-            kwrite64(from_vnode + off_vnode_v_usecount, (uint64_t)(from_usecount - 1));
+            kwrite32(from_vnode + off_vnode_v_usecount, from_usecount - 1);
         }
     }
 
