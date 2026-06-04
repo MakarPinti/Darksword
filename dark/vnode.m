@@ -150,15 +150,20 @@ bool vnode_redirect_file(const char *to, const char *from, uint64_t* orig_to_vno
 bool vnode_unredirect_file(uint64_t orig_to_vnode, uint64_t orig_to_v_data, uint64_t from_vnode) {
     if (orig_to_vnode == 0 || orig_to_vnode == (uint64_t)-1) return false;
 
+    // Restore v_data FIRST, unconditionally.
+    // Old code checked to_usecount == 0 before restoring — if true it returned
+    // early and left the vnode pointing at from_vnode's v_data. After our
+    // process dies that pointer is stale → other processes access the vnode
+    // → kernel panic. v_data must be restored regardless of usecount.
+    kwrite64(orig_to_vnode + off_vnode_v_data, orig_to_v_data);
+
     // Use kread32/kwrite32 — same reason as vnode_redirect_file:
     // v_usecount is int32_t and kwrite64 would corrupt the adjacent v_iocount.
     uint32_t to_usecount = kread32(orig_to_vnode + off_vnode_v_usecount);
-    if (to_usecount == 0) return false;
-
-    kwrite64(orig_to_vnode + off_vnode_v_data, orig_to_v_data);
-
-    // Release the extra ref we took on to_vnode
-    kwrite32(orig_to_vnode + off_vnode_v_usecount, to_usecount - 1);
+    if (to_usecount > 0) {
+        // Release the extra ref we took on to_vnode
+        kwrite32(orig_to_vnode + off_vnode_v_usecount, to_usecount - 1);
+    }
 
     // Release the extra ref we took on from_vnode
     if (from_vnode != 0 && from_vnode != (uint64_t)-1) {
