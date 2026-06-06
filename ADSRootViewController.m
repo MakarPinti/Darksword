@@ -793,7 +793,11 @@ subtitle.attributedText = subtitleAttr;
                 [self appendLog:[NSString stringWithFormat:@"[*] sandbox_escape ret: %d", sbx_ret]];
             });
 
+            // Wire up UI log so elevate_to_root steps appear in logView
+            extern void (*sbx_ui_log)(NSString *);
+            sbx_ui_log = ^(NSString *s) { [self appendLog:s]; };
             int root_ret = sandbox_elevate_to_root(self_proc);
+            sbx_ui_log = NULL;
             dispatch_async(dispatch_get_main_queue(), ^{
                 [self appendLog:[NSString stringWithFormat:@"[*] elevate_to_root ret: %d uid=%d", root_ret, getuid()]];
                 [self setProgressValue:0.7 animated:YES];
